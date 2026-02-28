@@ -1,0 +1,328 @@
+{
+  "info": {
+    "name": "IndexMeNow API",
+    "description": "Complete SaaS URL Indexing API\n\n## How to use:\n1. Run 'Register' → token auto-saved\n2. Run 'Google Login URL' → open URL in browser → login\n3. All protected routes use Bearer token automatically",
+    "_postman_id": "indexmenow-v4",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "token", "value": "", "type": "string", "description": "JWT token — auto-set after login/register" },
+    { "key": "apiKey", "value": "", "type": "string", "description": "API key — auto-set after login/register" },
+    { "key": "jobId", "value": "", "type": "string" },
+    { "key": "adminKey", "value": "test-admin-key", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "🔐 Auth — Email & Password",
+      "description": "Traditional email/password authentication",
+      "item": [
+        {
+          "name": "Register",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "const r = pm.response.json();",
+                "if (r.token) pm.collectionVariables.set('token', r.token);",
+                "if (r.user?.apiKey) pm.collectionVariables.set('apiKey', r.user.apiKey);",
+                "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                "pm.test('Has token', () => pm.expect(r.token).to.be.a('string'));"
+              ],
+              "type": "text/javascript"
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"email\": \"john@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "const r = pm.response.json();",
+                "if (r.token) pm.collectionVariables.set('token', r.token);",
+                "if (r.user?.apiKey) pm.collectionVariables.set('apiKey', r.user.apiKey);",
+                "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                "pm.test('Has token', () => pm.expect(r.token).to.be.a('string'));"
+              ],
+              "type": "text/javascript"
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/api/auth/me"
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/auth/profile",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Smith\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/auth/change-password",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"newpassword456\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Regenerate API Key",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/api/auth/regenerate-key"
+          }
+        }
+      ]
+    },
+    {
+      "name": "🔵 Google OAuth",
+      "description": "Two purposes:\n1. LOGIN with Google (no account needed)\n2. CONNECT Google Search Console to existing account",
+      "item": [
+        {
+          "name": "── LOGIN with Google ──",
+          "item": [
+            {
+              "name": "Step 1: Get Google Login URL",
+              "event": [{
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "const r = pm.response.json();",
+                    "if (r.url) console.log('\\n👉 Open this URL in your browser to login with Google:\\n' + r.url + '\\n');"
+                  ],
+                  "type": "text/javascript"
+                }
+              }],
+              "request": {
+                "method": "GET",
+                "url": "{{baseUrl}}/api/oauth/google/login-url",
+                "description": "No auth needed. Open the returned URL in browser. After Google login, you'll be redirected to frontend with ?token=JWT_TOKEN in the URL."
+              }
+            },
+            {
+              "name": "Step 2: (Auto) Google calls /callback",
+              "request": {
+                "method": "GET",
+                "url": "{{baseUrl}}/api/oauth/google/callback",
+                "description": "This endpoint is called automatically by Google. You don't call this manually.\n\nAfter callback → frontend receives: /auth/callback?token=JWT_TOKEN\nSave that token and use it for all API calls."
+              }
+            }
+          ]
+        },
+        {
+          "name": "── CONNECT Google to Account ──",
+          "item": [
+            {
+              "name": "Step 1: Get Google Connect URL",
+              "event": [{
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "const r = pm.response.json();",
+                    "if (r.url) console.log('\\n👉 Open this URL in browser to connect Google Search Console:\\n' + r.url + '\\n');"
+                  ],
+                  "type": "text/javascript"
+                }
+              }],
+              "request": {
+                "method": "GET",
+                "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+                "url": "{{baseUrl}}/api/oauth/google/connect-url",
+                "description": "Auth required. Open returned URL in browser. After consent, Google Search Console properties will be linked to your account."
+              }
+            },
+            {
+              "name": "View Connected Accounts",
+              "request": {
+                "method": "GET",
+                "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+                "url": "{{baseUrl}}/api/oauth/google/accounts",
+                "description": "Shows all connected Google accounts and their GSC properties"
+              }
+            },
+            {
+              "name": "Sync GSC Properties",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+                "url": "{{baseUrl}}/api/oauth/google/sync",
+                "description": "Re-fetch GSC properties from Google (if you added new sites to Search Console)"
+              }
+            },
+            {
+              "name": "Disconnect Google Account",
+              "request": {
+                "method": "DELETE",
+                "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+                "url": "{{baseUrl}}/api/oauth/google/GOOGLE_ACCOUNT_ID",
+                "description": "Replace GOOGLE_ACCOUNT_ID with the googleAccountId from View Connected Accounts"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🌐 URL Indexing",
+      "item": [
+        {
+          "name": "Submit URL",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "const r = pm.response.json();",
+                "if (r.jobId) pm.collectionVariables.set('jobId', r.jobId);",
+                "pm.test('Success', () => pm.expect(r.success).to.be.true);",
+                "console.log('Job ID:', r.jobId, '| Status:', r.status);"
+              ],
+              "type": "text/javascript"
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/urls/submit",
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://yoursite.com/your-page\"\n}" }
+          }
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/api/urls/status/{{jobId}}"
+          }
+        },
+        {
+          "name": "Force Refresh Status",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/api/urls/status/{{jobId}}/refresh",
+            "description": "Use when GSC shows indexed but status is stuck at QUEUED/WAITING"
+          }
+        },
+        {
+          "name": "List All Jobs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/urls/jobs?page=1&limit=20",
+              "query": [{ "key": "page", "value": "1" }, { "key": "limit", "value": "20" }]
+            }
+          }
+        },
+        {
+          "name": "List INDEXED Jobs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/api/urls/jobs?status=INDEXED", "query": [{ "key": "status", "value": "INDEXED" }] }
+          }
+        },
+        {
+          "name": "List FAILED Jobs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/api/urls/jobs?status=FAILED", "query": [{ "key": "status", "value": "FAILED" }] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🌍 Public",
+      "item": [
+        { "name": "Health Check", "request": { "method": "GET", "url": "{{baseUrl}}/health" } },
+        { "name": "Sitemap", "request": { "method": "GET", "url": "{{baseUrl}}/sitemap.xml" } },
+        { "name": "RSS Feed", "request": { "method": "GET", "url": "{{baseUrl}}/rss.xml" } },
+        { "name": "Robots.txt", "request": { "method": "GET", "url": "{{baseUrl}}/robots.txt" } }
+      ]
+    },
+    {
+      "name": "⚙️ Admin",
+      "item": [
+        {
+          "name": "List Service Accounts",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Key", "value": "{{adminKey}}" }],
+            "url": "{{baseUrl}}/api/admin/service-accounts"
+          }
+        },
+        {
+          "name": "Add Service Account",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "X-Admin-Key", "value": "{{adminKey}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/admin/service-accounts",
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"sa@project.iam.gserviceaccount.com\",\n  \"privateKey\": \"-----BEGIN PRIVATE KEY-----\\nYOUR_KEY\\n-----END PRIVATE KEY-----\\n\",\n  \"projectId\": \"your-project-id\"\n}" }
+          }
+        },
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Key", "value": "{{adminKey}}" }],
+            "url": "{{baseUrl}}/api/admin/users"
+          }
+        },
+        {
+          "name": "Add Credits to User",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "X-Admin-Key", "value": "{{adminKey}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/admin/users/USER_ID_HERE/credits",
+            "body": { "mode": "raw", "raw": "{\n  \"amount\": 50\n}" }
+          }
+        }
+      ]
+    }
+  ]
+}

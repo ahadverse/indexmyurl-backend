@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "description": "SaaS URL Indexing Service using Google Indexing API",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "node api.js && tsc",
+    "start": "node api.js && node dist/server.js",
+    "dev": "node api.js && ts-node-dev --respawn --transpile-only src/server.ts",
     "lint": "eslint src/**/*.ts"
   },
   "dependencies": {
@@ -24,6 +27,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "node-cron": "^3.0.3",
+    "typescript": "^5.3.2",
     "uuid": "^9.0.1",
     "winston": "^3.11.0"
   },
@@ -37,7 +41,6 @@
     "@types/node": "^20.10.0",
     "@types/node-cron": "^3.0.11",
     "@types/uuid": "^9.0.7",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.3.2"
+    "ts-node-dev": "^2.0.0"
   }
 }

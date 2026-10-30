@@ -51,6 +51,16 @@ export class WrapperController {
     }
   }
 
+  /** GET /indexnow.txt — IndexNow key verification file (only when INDEXNOW_KEY is set) */
+  serveIndexNowKey(req: Request, res: Response): void {
+    if (!env.indexNow.key) {
+      res.status(404).send('Not Found');
+      return;
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(env.indexNow.key);
+  }
+
   /** GET /robots.txt */
   serveRobots(req: Request, res: Response): void {
     const sitemapUrl = `${env.server.baseUrl}/sitemap.xml`;

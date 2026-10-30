@@ -26,7 +26,10 @@ export class IndexStatusService {
     userId: mongoose.Types.ObjectId,
   ): Promise<IndexCheckResult> {
     const domain = new URL(url).hostname.replace(/^www\./, "");
-    const credential = await credentialResolver.resolve(userId, domain);
+    const credential = await credentialResolver.resolveForInspection(
+      userId,
+      domain,
+    );
     if (!credential) {
       return { status: "ERROR", source: "ERROR", checkedAt: new Date() };
     }
@@ -45,8 +48,13 @@ export class IndexStatusService {
     const job = await UrlJob.findById(jobId);
     if (!job) throw new Error(`Job not found: ${jobId}`);
 
-    const credential = await credentialResolver.resolve(job.userId, job.domain);
+    const credential = await credentialResolver.resolveForInspection(
+      job.userId,
+      job.domain,
+    );
     if (!credential) {
+      // Still stamp the attempt so the cron backs off instead of retrying every tick
+      await UrlJob.findByIdAndUpdate(jobId, { lastCheckedAt: new Date() });
       return { status: "ERROR", source: "ERROR", checkedAt: new Date() };
     }
 
@@ -59,6 +67,7 @@ export class IndexStatusService {
     );
 
     await UrlJob.findByIdAndUpdate(jobId, {
+      $set: { lastCheckedAt: result.checkedAt },
       $push: {
         indexCheckResults: {
           checkedAt: result.checkedAt,

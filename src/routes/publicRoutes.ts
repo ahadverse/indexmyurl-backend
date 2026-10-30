@@ -15,6 +15,10 @@ router.get('/rss.xml', (req, res, next) =>
   wrapperController.serveRss(req, res, next)
 );
 
+router.get('/indexnow.txt', (req, res) =>
+  wrapperController.serveIndexNowKey(req, res)
+);
+
 router.get('/robots.txt', (req, res) =>
   wrapperController.serveRobots(req, res)
 );

@@ -9,8 +9,12 @@ import { generateApiKey, extractDomain, normalizeSiteUrl } from '../utils/helper
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 
+export const INDEXING_SCOPE = 'https://www.googleapis.com/auth/indexing';
+
+// In `platform` mode users' tokens never publish, so we don't ask users for the
+// Indexing API scope at all — their account can't be used for it even by mistake.
 export const GOOGLE_SCOPES = [
-  'https://www.googleapis.com/auth/indexing',
+  ...(env.google.publishCredentialMode === 'platform' ? [] : [INDEXING_SCOPE]),
   'https://www.googleapis.com/auth/webmasters.readonly',
   'openid',
   'email',
@@ -251,9 +255,11 @@ export class GoogleOAuthService {
   // ─── Get valid access token (auto-refresh if expired) ────────────
   async getValidToken(
     userId: mongoose.Types.ObjectId,
-    siteUrl?: string
+    siteUrl?: string,
+    requiredScope?: string
   ): Promise<{ accessToken: string; tokenDoc: InstanceType<typeof GoogleToken> } | null> {
     const query: Record<string, unknown> = { userId, isActive: true };
+    if (requiredScope) query.scopes = requiredScope;
 
     if (siteUrl) {
       const normalized = normalizeSiteUrl(siteUrl);

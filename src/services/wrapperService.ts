@@ -13,6 +13,21 @@ export class WrapperService {
     const job = await UrlJob.findById(jobId);
     if (!job) throw new Error(`Job not found: ${jobId}`);
 
+    // Idempotent: if this job already has a live wrapper (the Google call failed
+    // or was deferred and the job is being processed again), reuse it instead of
+    // piling up orphaned wrappers in the sitemap.
+    if (job.wrapperId && job.wrapperUrl) {
+      const existing = await WrapperPage.findOne({
+        wrapperId: job.wrapperId,
+        status: WrapperStatus.ACTIVE,
+        expiresAt: { $gt: new Date() },
+      }).select('wrapperId wrapperUrl');
+      if (existing) {
+        await UrlJob.findByIdAndUpdate(jobId, { status: JobStatus.WRAPPER_CREATED });
+        return { wrapperId: existing.wrapperId, wrapperUrl: existing.wrapperUrl };
+      }
+    }
+
     const wrapperId = generateWrapperId();
     const wrapperUrl = `${env.server.baseUrl}/job/${wrapperId}`;
     const expiresAt = new Date(

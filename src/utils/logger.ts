@@ -19,7 +19,19 @@ export const logger = winston.createLogger({
         logFormat
       ),
     }),
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
+    // Capped so a long-running server can't fill its disk (5 x 10 MB per file)
+    new winston.transports.File({
+      filename: 'logs/error.log',
+      level: 'error',
+      maxsize: 10 * 1024 * 1024,
+      maxFiles: 5,
+      tailable: true,
+    }),
+    new winston.transports.File({
+      filename: 'logs/combined.log',
+      maxsize: 10 * 1024 * 1024,
+      maxFiles: 5,
+      tailable: true,
+    }),
   ],
 });

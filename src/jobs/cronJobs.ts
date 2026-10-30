@@ -5,35 +5,60 @@ import { jobOrchestrator } from "../services/jobOrchestratorService";
 import { retryService } from "../services/retryService";
 import { env } from "../config/env";
 import { sleep } from "../utils/helpers";
+import { isStatusCheckDue } from "../utils/schedule";
 import { logger } from "../utils/logger";
 
-// ─── Index status check — every 4 hours ──────────────────────────────
+// Jobs the Indexing API has been called for — Googlebot is (or should be) crawling
+const PUBLISHED_STATUSES = [
+  JobStatus.WAITING_CRAWL,
+  JobStatus.CRAWLED_NOT_INDEXED,
+];
+// Jobs not published yet (queued, or deferred by quota/backoff) — might already be indexed
+const UNPUBLISHED_STATUSES = [
+  JobStatus.PENDING,
+  JobStatus.QUEUED,
+  JobStatus.WRAPPER_CREATED,
+];
+const UNPUBLISHED_FIRST_CHECK_MS = 30 * 60 * 1000;
+
+// ─── Index status check — adaptive per job (see utils/schedule.ts) ───
 export function startIndexCheckJob(): void {
-  cron.schedule("0 */2 * * *", async () => {
-    logger.info("Cron: index check started");
+  let running = false;
+
+  cron.schedule(env.indexCheck.cron, async () => {
+    if (running) {
+      logger.warn("Cron: previous index check still running — skipping this tick");
+      return;
+    }
+    running = true;
+
     try {
-      const now = new Date();
+      const now = Date.now();
+      const publishedFirstCheckMs = env.indexCheck.firstCheckAfterMinutes * 60 * 1000;
 
-      // Active jobs: waiting for crawl
-      const activeJobs = await UrlJob.find({
-        status: {
-          $in: [JobStatus.WAITING_CRAWL, JobStatus.CRAWLED_NOT_INDEXED],
-        },
-        apiCalledAt: { $lte: new Date(now.getTime() - 2 * 60 * 60 * 1000) },
-      }).select("_id");
+      const candidates = await UrlJob.find({
+        status: { $in: [...PUBLISHED_STATUSES, ...UNPUBLISHED_STATUSES] },
+      }).select("_id status createdAt apiCalledAt lastCheckedAt");
 
-      // Stale jobs: QUEUED/PENDING > 30 min old (may already be indexed)
-      const staleJobs = await UrlJob.find({
-        status: { $in: [JobStatus.QUEUED, JobStatus.PENDING] },
-        createdAt: { $lte: new Date(now.getTime() - 30 * 60 * 1000) },
-      }).select("_id");
+      const due = candidates.filter((job) => {
+        const published = PUBLISHED_STATUSES.includes(job.status);
+        return isStatusCheckDue({
+          now,
+          startedAt: (published && job.apiCalledAt) || job.createdAt,
+          lastCheckedAt: job.lastCheckedAt,
+          firstCheckAfterMs: published
+            ? publishedFirstCheckMs
+            : UNPUBLISHED_FIRST_CHECK_MS,
+        });
+      });
 
-      const all = [...activeJobs, ...staleJobs];
-      logger.info(
-        `Cron: checking ${activeJobs.length} active + ${staleJobs.length} stale jobs`,
-      );
+      if (due.length > 0) {
+        logger.info(
+          `Cron: index check — ${due.length} due of ${candidates.length} open jobs`,
+        );
+      }
 
-      for (const job of all) {
+      for (const job of due) {
         try {
           await jobOrchestrator.checkAndHandleStatus(
             new mongoose.Types.ObjectId(job._id.toString()),
@@ -45,9 +70,33 @@ export function startIndexCheckJob(): void {
       }
     } catch (error) {
       logger.error("Cron index check failed:", error);
+    } finally {
+      running = false;
     }
   });
-  logger.info("Cron: index check scheduled (every 4h)");
+  logger.info(`Cron: index check scheduled (${env.indexCheck.cron})`);
+}
+
+// ─── Recover stuck / deferred jobs — every 10 minutes ────────────────
+export function startRecoveryJob(): void {
+  let running = false;
+
+  cron.schedule("*/10 * * * *", async () => {
+    if (running) return;
+    running = true;
+
+    try {
+      const requeued = await jobOrchestrator.recoverStuckJobs();
+      if (requeued > 0) {
+        logger.info(`Cron: recovery re-queued ${requeued} job(s)`);
+      }
+    } catch (error) {
+      logger.error("Cron recovery failed:", error);
+    } finally {
+      running = false;
+    }
+  });
+  logger.info("Cron: recovery scheduled (every 10 min)");
 }
 
 // ─── Retry eligible jobs — every 6 hours ─────────────────────────────

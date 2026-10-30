@@ -10,7 +10,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "lint": "eslint src/**/*.ts"
+    "lint": "eslint src/**/*.ts",
+    "test": "node --require ts-node/register/transpile-only --require ./tests/setup.ts --test tests/pacificTime.test.ts tests/schedule.test.ts tests/publishFlow.test.ts tests/htmlGenerator.test.ts tests/preflightPrimitives.test.ts tests/preflightService.test.ts tests/preflightSse.test.ts tests/sitemapImport.test.ts",
+    "test:integration": "node --require ts-node/register/transpile-only --test --test-concurrency=1 --test-force-exit tests/integration/pipeline.test.ts tests/integration/pool.test.ts tests/integration/http.test.ts tests/integration/oauthScopes.test.ts tests/integration/preflight.test.ts"
   },
   "dependencies": {
     "axios": "^1.6.0",

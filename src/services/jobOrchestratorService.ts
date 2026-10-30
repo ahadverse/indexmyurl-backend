@@ -4,11 +4,17 @@ import { urlValidationService } from "./urlValidationService";
 import { creditService } from "./creditService";
 import { queueService } from "./queueService";
 import { wrapperService } from "./wrapperService";
-import { googleIndexingService } from "./googleIndexingService";
+import { googleIndexingService, PublishResult } from "./googleIndexingService";
 import { sitemapService } from "./sitemapService";
 import { indexStatusService } from "./indexStatusService";
 import { retryService } from "./retryService";
-import { extractDomain } from "../utils/helpers";
+import { env } from "../config/env";
+import {
+  extractDomain,
+  generateRandomDelayMs,
+  getNextPacificMidnight,
+} from "../utils/helpers";
+import { publishRetryDelayMs } from "../utils/schedule";
 import { logger } from "../utils/logger";
 
 export interface SubmitResult {
@@ -86,15 +92,26 @@ export class JobOrchestratorService {
       };
     }
 
-    // Create job
+    // Create job. If this fails the reserved credit must be given back, otherwise
+    // it stays reserved forever. A duplicate-key error means another request for the
+    // same URL got in first (the unique index is the real guard against the race).
     const domain = extractDomain(url);
-    const job = await UrlJob.create({
-      userId,
-      originalUrl: url,
-      domain,
-      status: JobStatus.PENDING,
-      creditReservedAt: new Date(),
-    });
+    let job;
+    try {
+      job = await UrlJob.create({
+        userId,
+        originalUrl: url,
+        domain,
+        status: JobStatus.PENDING,
+        creditReservedAt: new Date(),
+      });
+    } catch (error) {
+      await creditService.refundCredit(userId);
+      if ((error as { code?: number }).code === 11000) {
+        return { success: false, message: "URL already submitted. It is already being processed." };
+      }
+      throw error;
+    }
 
     // Enqueue with smart delay
     await queueService.enqueue(job._id);
@@ -115,6 +132,12 @@ export class JobOrchestratorService {
     const job = await UrlJob.findById(jobId);
     if (!job) throw new Error(`Job not found: ${jobId}`);
 
+    // The job may have finished (or been failed by cleanup) while it sat in the queue
+    if ([JobStatus.INDEXED, JobStatus.FAILED].includes(job.status)) {
+      logger.info(`Job ${jobId} already ${job.status} — skipping`);
+      return;
+    }
+
     // Double-check: indexed yet? (only short-circuit on INDEXED — ignore ERROR/NOT_FOUND)
     const check = await indexStatusService.preCheck(
       job.originalUrl,
@@ -131,19 +154,132 @@ export class JobOrchestratorService {
     logger.info(`Wrapper created for job ${jobId}: ${wrapperUrl}`);
 
     // Call Google Indexing API
-    const ok = await googleIndexingService.notifyUrl(jobId, wrapperUrl);
-    if (!ok) {
-      // Log error but don't throw — job stays WRAPPER_CREATED, cron will retry
-      logger.warn(
-        `Google Indexing API call failed for job ${jobId} — will retry`,
-      );
+    const result = await googleIndexingService.notifyUrl(jobId, wrapperUrl);
+    if (result.outcome !== "SUCCESS") {
+      await this.handlePublishFailure(jobId, result);
       return;
     }
 
     // Secondary crawl signals
-    await sitemapService.sendSecondaryCrawlSignals();
+    await sitemapService.sendSecondaryCrawlSignals([wrapperUrl]);
 
     logger.info(`Job ${jobId} processed — waiting for Googlebot`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Indexing API call did not succeed: defer it (the recovery cron
+  // re-queues it when due) or give up and refund.
+  // ─────────────────────────────────────────────────────────────────
+  private async handlePublishFailure(
+    jobId: mongoose.Types.ObjectId,
+    result: PublishResult,
+  ): Promise<void> {
+    if (result.outcome === "QUOTA_EXHAUSTED") {
+      // Not the job's fault, so it doesn't use up an attempt. Resume after the
+      // Pacific-midnight reset, spread out so every waiting job doesn't hit at once.
+      const resumeAt = new Date(
+        getNextPacificMidnight().getTime() + generateRandomDelayMs(1, 30),
+      );
+      await UrlJob.findByIdAndUpdate(jobId, { nextPublishAt: resumeAt });
+      logger.warn(
+        `Job ${jobId}: Indexing API quota spent — resuming at ${resumeAt.toISOString()}`,
+      );
+      return;
+    }
+
+    if (result.outcome === "PERMANENT") {
+      await this.failPublish(jobId, result.message ?? "Google rejected the request");
+      return;
+    }
+
+    // RETRYABLE
+    const job = await UrlJob.findByIdAndUpdate(
+      jobId,
+      { $inc: { publishAttempts: 1 } },
+      { new: true },
+    );
+    if (!job) return;
+
+    if (job.publishAttempts >= env.job.maxPublishAttempts) {
+      await this.failPublish(
+        jobId,
+        `Gave up after ${job.publishAttempts} failed Indexing API attempts. ${result.message ?? ""}`.trim(),
+      );
+      return;
+    }
+
+    const retryAt = new Date(Date.now() + publishRetryDelayMs(job.publishAttempts));
+    await UrlJob.findByIdAndUpdate(jobId, { nextPublishAt: retryAt });
+    logger.warn(
+      `Job ${jobId}: Indexing API attempt ${job.publishAttempts}/${env.job.maxPublishAttempts} failed — retrying at ${retryAt.toISOString()}`,
+    );
+  }
+
+  private async failPublish(
+    jobId: mongoose.Types.ObjectId,
+    message: string,
+  ): Promise<void> {
+    await UrlJob.findByIdAndUpdate(jobId, {
+      $push: { errorLog: { timestamp: new Date(), message, step: "PUBLISH" } },
+    });
+    await this.handleFailure(jobId);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // The queue processor threw (DB error, etc.) and Bull used up its
+  // attempts. Count it like a failed publish so a job can't loop forever.
+  // ─────────────────────────────────────────────────────────────────
+  async handleProcessingError(
+    jobId: mongoose.Types.ObjectId,
+    error: Error,
+  ): Promise<void> {
+    await this.handlePublishFailure(jobId, {
+      outcome: "RETRYABLE",
+      message: `Worker error: ${error.message}`,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Safety net: re-queue jobs that are due after a deferral, or that
+  // sit in QUEUED/WRAPPER_CREATED with no live queue entry (Redis
+  // flush, crash, exhausted worker attempts).
+  // ─────────────────────────────────────────────────────────────────
+  async recoverStuckJobs(): Promise<number> {
+    const now = Date.now();
+    // Longest legitimate wait in the queue: max delay + busy-domain extra (20) + margin
+    const stuckBefore = new Date(
+      now - (env.queue.maxDelayMinutes + 30) * 60 * 1000,
+    );
+
+    const candidates = await UrlJob.find({
+      $or: [
+        {
+          status: { $in: [JobStatus.QUEUED, JobStatus.WRAPPER_CREATED] },
+          $or: [
+            { nextPublishAt: { $lte: new Date(now) } },
+            { nextPublishAt: null, queuedAt: { $lte: stuckBefore } },
+          ],
+        },
+        // Created but never queued (e.g. Redis was down at submit time)
+        { status: JobStatus.PENDING, queuedAt: null, createdAt: { $lte: stuckBefore } },
+      ],
+    })
+      .select("_id")
+      .limit(200);
+
+    let requeued = 0;
+    for (const candidate of candidates) {
+      try {
+        // enqueue() leaves a job alone if it is still live in the queue
+        const queued = await queueService.enqueue(
+          new mongoose.Types.ObjectId(candidate._id.toString()),
+        );
+        if (queued) requeued++;
+      } catch (err) {
+        logger.error(`Recovery re-queue failed for job ${candidate._id}:`, err);
+      }
+    }
+    return requeued;
   }
 
   // ─────────────────────────────────────────────────────────────────

@@ -2,7 +2,9 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
+import mongoose from 'mongoose';
 import { env } from './config/env';
+import { isRedisReady } from './config/queue';
 import { apiRateLimit } from './middlewares/rateLimitMiddleware';
 import { errorMiddleware, notFoundMiddleware } from './middlewares/errorMiddleware';
 
@@ -13,6 +15,10 @@ import adminRoutes from './routes/adminRoutes';
 import publicRoutes from './routes/publicRoutes';
 
 const app = express();
+
+// Behind a reverse proxy the client IP arrives in X-Forwarded-For. Without this,
+// every user looks like the proxy's IP and shares a single rate-limit bucket.
+if (env.server.trustProxy > 0) app.set('trust proxy', env.server.trustProxy);
 
 // ─── Security & parsing ───────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -25,8 +31,17 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api', apiRateLimit);
 
 // ─── Health check ─────────────────────────────────────────────────
+// 503 when a dependency is down, so a load balancer / monitor sees it too
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), env: env.server.nodeEnv });
+  const mongo = mongoose.connection.readyState === 1;
+  const redis = isRedisReady();
+  res.status(mongo && redis ? 200 : 503).json({
+    status: mongo && redis ? 'ok' : 'degraded',
+    mongo: mongo ? 'up' : 'down',
+    redis: redis ? 'up' : 'down',
+    timestamp: new Date().toISOString(),
+    env: env.server.nodeEnv,
+  });
 });
 
 // ─── API Routes ───────────────────────────────────────────────────

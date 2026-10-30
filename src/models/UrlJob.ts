@@ -37,6 +37,11 @@ export interface IUrlJob extends Document {
   lastRetryAt: Date | null;
   nextRetryAt: Date | null;
 
+  // Indexing API call tracking
+  publishAttempts: number;      // failed API calls (quota waits don't count)
+  nextPublishAt: Date | null;   // set when the call is deferred (quota / backoff)
+  lastCheckedAt: Date | null;   // last Search Console status check
+
   // Timestamps
   queuedAt: Date | null;
   apiCalledAt: Date | null;
@@ -91,6 +96,10 @@ const UrlJobSchema = new Schema<IUrlJob>(
     lastRetryAt: { type: Date, default: null },
     nextRetryAt: { type: Date, default: null },
 
+    publishAttempts: { type: Number, default: 0 },
+    nextPublishAt: { type: Date, default: null },
+    lastCheckedAt: { type: Date, default: null },
+
     queuedAt: { type: Date, default: null },
     apiCalledAt: { type: Date, default: null },
     indexedAt: { type: Date, default: null },
@@ -113,15 +122,16 @@ const UrlJobSchema = new Schema<IUrlJob>(
   { timestamps: true }
 );
 
-// Prevent duplicate active submission of same URL by same user
+// Prevent duplicate active submission of same URL by same user.
+// MongoDB cannot build a partial index from $nin/$not (CannotCreateIndex), so list the
+// still-active statuses explicitly — derived from the enum, so a new status counts as
+// active by default. `$in` in a partial filter needs MongoDB >= 6.0.
+const ACTIVE_STATUSES = Object.values(JobStatus).filter(
+  (status) => status !== JobStatus.FAILED && status !== JobStatus.INDEXED
+);
 UrlJobSchema.index(
   { userId: 1, originalUrl: 1 },
-  {
-    unique: true,
-    partialFilterExpression: {
-      status: { $nin: [JobStatus.FAILED, JobStatus.INDEXED] },
-    },
-  }
+  { unique: true, partialFilterExpression: { status: { $in: ACTIVE_STATUSES } } }
 );
 
 UrlJobSchema.index({ status: 1, nextRetryAt: 1 });

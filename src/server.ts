@@ -2,13 +2,29 @@ import 'dotenv/config';
 import app from './app';
 import { env } from './config/env';
 import { connectDatabase, disconnectDatabase } from './config/database';
-import { allQueues } from './config/queue';
+import { allQueues, waitForRedis } from './config/queue';
 import { serviceAccountPool } from './services/serviceAccountPool';
 import { startIndexingWorker } from './jobs/indexingWorker';
-import { startIndexCheckJob, startRetryJob, startCleanupJob } from './jobs/cronJobs';
+import {
+  startIndexCheckJob,
+  startRecoveryJob,
+  startRetryJob,
+  startCleanupJob,
+} from './jobs/cronJobs';
 import { logger } from './utils/logger';
 
 async function bootstrap(): Promise<void> {
+  // 0. Redis is not optional: the job queue, the worker and the retry/recovery crons all
+  //    depend on it. Without it every submission would wait forever, so refuse to start.
+  if (!(await waitForRedis())) {
+    logger.error(
+      `Redis is not reachable at ${env.redis.host}:${env.redis.port}. ` +
+        'IndexMeNow cannot run without it: start Redis (or fix REDIS_HOST / REDIS_PORT / REDIS_PASSWORD in .env) and start the backend again.'
+    );
+    process.exit(1);
+  }
+  logger.info(`Redis connected (${env.redis.host}:${env.redis.port})`);
+
   // 1. Connect DB
   await connectDatabase();
 
@@ -20,6 +36,7 @@ async function bootstrap(): Promise<void> {
 
   // 4. Start cron jobs
   startIndexCheckJob();
+  startRecoveryJob();
   startRetryJob();
   startCleanupJob();
 

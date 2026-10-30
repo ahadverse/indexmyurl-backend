@@ -103,6 +103,8 @@ export class OAuthController {
       res.json({
         success: true,
         hasGoogleConnected: hasOAuth,
+        // Lets the UI describe accurately whether a user's own token can publish
+        publishCredentialMode: env.google.publishCredentialMode,
         totalAccounts: accounts.length,
         totalProperties: accounts.reduce((s, a) => s + a.propertiesCount, 0),
         accounts,

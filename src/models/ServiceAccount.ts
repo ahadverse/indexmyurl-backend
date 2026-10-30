@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema } from 'mongoose';
+import { getNextPacificMidnight } from '../utils/helpers';
 
 export interface IServiceAccount extends Document {
   _id: mongoose.Types.ObjectId;
@@ -30,14 +31,8 @@ const ServiceAccountSchema = new Schema<IServiceAccount>(
 
     dailyQuotaUsed: { type: Number, default: 0 },
     dailyQuotaLimit: { type: Number, default: 180 }, // 200 max — keep 20 buffer
-    quotaResetAt: {
-      type: Date,
-      default: () => {
-        const d = new Date();
-        d.setUTCHours(24, 0, 0, 0);
-        return d;
-      },
-    },
+    // Google resets daily quotas at midnight Pacific Time (not UTC)
+    quotaResetAt: { type: Date, default: () => getNextPacificMidnight() },
 
     isActive: { type: Boolean, default: true },
     consecutiveErrors: { type: Number, default: 0 },

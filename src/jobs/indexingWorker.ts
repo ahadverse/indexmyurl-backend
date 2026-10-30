@@ -17,9 +17,22 @@ export function startIndexingWorker(): void {
     logger.info(`Queue job completed: ${job.id}`)
   );
 
-  indexingQueue.on('failed', (job, err) =>
-    logger.error(`Queue job failed: ${job.id}`, err)
-  );
+  indexingQueue.on('failed', async (job, err) => {
+    logger.error(`Queue job failed: ${job.id}`, err);
+
+    // Only act once Bull has used up its retries; the recovery cron re-queues
+    // the job later, and publishAttempts caps how often that can happen.
+    if (job.attemptsMade < (job.opts.attempts ?? 1)) return;
+    try {
+      const { jobId } = job.data as QueueJobPayload;
+      await jobOrchestrator.handleProcessingError(
+        new mongoose.Types.ObjectId(jobId),
+        err
+      );
+    } catch (handlerError) {
+      logger.error(`Failed-job handler error for ${job.id}:`, handlerError);
+    }
+  });
 
   indexingQueue.on('stalled', (job) =>
     logger.warn(`Queue job stalled: ${job.id}`)

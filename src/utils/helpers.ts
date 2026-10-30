@@ -46,3 +46,52 @@ export function getNextMidnight(): Date {
   d.setHours(24, 0, 0, 0);
   return d;
 }
+
+// ─── Google API quotas reset at midnight Pacific Time, not UTC ────────
+const PACIFIC_TZ = 'America/Los_Angeles';
+
+/** Pacific wall-clock offset from UTC (ms) at a given instant: local = utc + offset */
+function pacificOffsetMs(date: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: PACIFIC_TZ,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(date);
+  const get = (type: string): number =>
+    Number(parts.find((p) => p.type === type)!.value);
+  const wallAsUtc = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour'),
+    get('minute'),
+    get('second')
+  );
+  return wallAsUtc - Math.floor(date.getTime() / 1000) * 1000;
+}
+
+/** The next 00:00 America/Los_Angeles after `from` (DST-aware), as a real instant. */
+export function getNextPacificMidnight(from: Date = new Date()): Date {
+  const offset = pacificOffsetMs(from);
+  const wall = new Date(from.getTime() + offset);
+  const nextWallMidnight = Date.UTC(
+    wall.getUTCFullYear(),
+    wall.getUTCMonth(),
+    wall.getUTCDate() + 1
+  );
+  let instant = nextWallMidnight - offset;
+  // The offset can differ at the target instant if a DST change falls in between
+  const offsetAtTarget = pacificOffsetMs(new Date(instant));
+  if (offsetAtTarget !== offset) instant = nextWallMidnight - offsetAtTarget;
+  return new Date(instant);
+}
+
+/** Pacific calendar date (YYYY-MM-DD) — used to bucket daily quota counters. */
+export function getPacificDateKey(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: PACIFIC_TZ }).format(date);
+}

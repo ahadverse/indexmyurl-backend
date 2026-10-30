@@ -1,6 +1,7 @@
 import { JWT } from 'google-auth-library';
 import { ServiceAccount, IServiceAccount } from '../models/ServiceAccount';
 import { env } from '../config/env';
+import { getNextPacificMidnight } from '../utils/helpers';
 import { logger } from '../utils/logger';
 
 // Cache JWT clients in memory
@@ -25,21 +26,24 @@ export class ServiceAccountPool {
   }
 
   // ─── Get best available SA (least used, has quota) ────────────────
-  async getAvailable(): Promise<IServiceAccount | null> {
+  // consumeQuota=false is for calls that don't spend Indexing API publish quota
+  // (Search Console reads/submits), so they must not eat into the daily budget.
+  async getAvailable(consumeQuota = true): Promise<IServiceAccount | null> {
     await this.resetExpiredQuotas();
 
-    const account = await ServiceAccount.findOneAndUpdate(
-      {
-        isActive: true,
-        consecutiveErrors: { $lt: 5 },
-        $expr: { $lt: ['$dailyQuotaUsed', '$dailyQuotaLimit'] },
-      },
-      {
-        $inc: { dailyQuotaUsed: 1 },
-        $set: { lastUsedAt: new Date() },
-      },
-      { sort: { dailyQuotaUsed: 1 }, new: true }
-    );
+    const filter = {
+      isActive: true,
+      consecutiveErrors: { $lt: 5 },
+      $expr: { $lt: ['$dailyQuotaUsed', '$dailyQuotaLimit'] },
+    };
+
+    const account = consumeQuota
+      ? await ServiceAccount.findOneAndUpdate(
+          filter,
+          { $inc: { dailyQuotaUsed: 1 }, $set: { lastUsedAt: new Date() } },
+          { sort: { dailyQuotaUsed: 1 }, new: true }
+        )
+      : await ServiceAccount.findOne(filter).sort({ dailyQuotaUsed: 1 });
 
     if (!account) {
       logger.warn('No service account available in pool');
@@ -52,6 +56,26 @@ export class ServiceAccountPool {
     return account;
   }
 
+  // ─── Healthy SAs exist but every one has spent today's quota ──────
+  async isQuotaExhausted(): Promise<boolean> {
+    await this.resetExpiredQuotas();
+    const spent = await ServiceAccount.exists({
+      isActive: true,
+      consecutiveErrors: { $lt: 5 },
+      $expr: { $gte: ['$dailyQuotaUsed', '$dailyQuotaLimit'] },
+    });
+    return !!spent;
+  }
+
+  // ─── Google said 429: spent for today, but the account is healthy ─
+  async markQuotaExhausted(accountId: string): Promise<void> {
+    const account = await ServiceAccount.findById(accountId).select('dailyQuotaLimit');
+    if (!account) return;
+    await ServiceAccount.findByIdAndUpdate(accountId, {
+      $set: { dailyQuotaUsed: account.dailyQuotaLimit },
+    });
+  }
+
   // ─── Get JWT client (cached) ──────────────────────────────────────
   getJwtClient(account: IServiceAccount): JWT {
     const cached = jwtClientCache.get(account.email);
@@ -62,7 +86,8 @@ export class ServiceAccountPool {
       key: account.privateKey.replace(/\\n/g, '\n'),
       scopes: [
         'https://www.googleapis.com/auth/indexing',
-        'https://www.googleapis.com/auth/webmasters.readonly',
+        // read/write: URL Inspection + submitting the wrapper sitemap
+        'https://www.googleapis.com/auth/webmasters',
       ],
     });
 
@@ -103,15 +128,11 @@ export class ServiceAccountPool {
     }
   }
 
-  // ─── Reset expired quotas ─────────────────────────────────────────
+  // ─── Reset expired quotas (Google resets at midnight Pacific) ─────
   private async resetExpiredQuotas(): Promise<void> {
-    const now = new Date();
-    const tomorrow = new Date();
-    tomorrow.setUTCHours(24, 0, 0, 0);
-
     await ServiceAccount.updateMany(
-      { quotaResetAt: { $lte: now } },
-      { $set: { dailyQuotaUsed: 0, quotaResetAt: tomorrow } }
+      { quotaResetAt: { $lte: new Date() } },
+      { $set: { dailyQuotaUsed: 0, quotaResetAt: getNextPacificMidnight() } }
     );
   }
 

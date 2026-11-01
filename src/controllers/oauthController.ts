@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { googleOAuthService } from '../services/googleOAuthService';
 import { credentialResolver } from '../services/credentialResolver';
+import { searchConsoleAccessService } from '../services/searchConsoleAccessService';
 import { env } from '../config/env';
 
 export class OAuthController {
@@ -99,10 +100,13 @@ export class OAuthController {
       const userId = req.user!._id;
       const accounts = await googleOAuthService.getConnectedAccounts(userId);
       const hasOAuth = await credentialResolver.hasOAuthConnected(userId);
+      const serviceAccountEmail = await searchConsoleAccessService.getServiceAccountEmail();
 
       res.json({
         success: true,
         hasGoogleConnected: hasOAuth,
+        // Alternative to connecting Google: add this address as a Full user in Search Console
+        serviceAccountEmail,
         // Lets the UI describe accurately whether a user's own token can publish
         publishCredentialMode: env.google.publishCredentialMode,
         totalAccounts: accounts.length,

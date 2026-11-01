@@ -47,7 +47,7 @@ export class CredentialResolver {
 
     for (const source of order) {
       if (source === "SERVICE_ACCOUNT") {
-        const credential = await this.resolvePlatform(true);
+        const credential = await this.resolvePlatform();
         if (credential) return { credential };
         if (await serviceAccountPool.isQuotaExhausted()) quotaExhausted = true;
         continue;
@@ -79,24 +79,8 @@ export class CredentialResolver {
     };
   }
 
-  /**
-   * Credential for read-only Search Console calls (URL Inspection). The user's
-   * own token comes first — only it can see the user's property. The platform
-   * SA is a last resort and does not spend Indexing API publish quota.
-   */
-  async resolveForInspection(
-    userId: mongoose.Types.ObjectId,
-    domain: string,
-  ): Promise<ResolvedCredential | null> {
-    const userCredential = await this.resolveUserToken(userId, domain);
-    if (userCredential) return userCredential;
-
-    const platformCredential = await this.resolvePlatform(false);
-    if (platformCredential) return platformCredential;
-
-    logger.error(`No inspection credential for user ${userId} domain ${domain}`);
-    return null;
-  }
+  // Credentials for read-only Search Console calls (URL Inspection) are resolved by
+  // searchConsoleAccessService: they must belong to the site's own property.
 
   /** User's OAuth token: domain-specific match first, then any active token. */
   private async resolveUserToken(
@@ -128,10 +112,8 @@ export class CredentialResolver {
     };
   }
 
-  private async resolvePlatform(
-    consumeQuota: boolean,
-  ): Promise<ResolvedCredential | null> {
-    const sa = await serviceAccountPool.getAvailable(consumeQuota);
+  private async resolvePlatform(): Promise<ResolvedCredential | null> {
+    const sa = await serviceAccountPool.getAvailable();
     if (!sa) return null;
 
     try {

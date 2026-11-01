@@ -173,6 +173,11 @@ export class GoogleIndexingService {
             errMsg
           );
         }
+        // The shared OAuth budget was charged when this credential was picked, but Google
+        // rejected the request before it counted, so give the unit back.
+        if (credential.source === 'OAUTH') {
+          await apiUsageService.release(OAUTH_PUBLISH_BUCKET);
+        }
         return { outcome: 'RETRYABLE', message, tryNextCredential: true };
       }
 

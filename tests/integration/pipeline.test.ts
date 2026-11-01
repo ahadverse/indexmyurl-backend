@@ -337,6 +337,9 @@ describe('indexing pipeline — real MongoDB + Redis, fake Google', () => {
   it('no credential at all: gives up after MAX_PUBLISH_ATTEMPTS and refunds the credit', async () => {
     env.job.maxPublishAttempts = 2;
     const user = await createUser({ credits: 5 });
+    // Search Console access (read-only) so the submit is accepted, but no way to publish:
+    // no service account, and this token has no Indexing scope
+    await connectGoogle(user, { scopes: [WEBMASTERS_READONLY] });
 
     const id = await submitOk(user);
     await deferred(id); // attempt 1

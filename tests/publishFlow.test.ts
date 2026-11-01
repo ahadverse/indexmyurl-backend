@@ -64,6 +64,7 @@ function arrange(opts: {
   };
   const oauthBudget = {
     markExhausted: mock.method(apiUsageService, 'markExhausted', async () => {}),
+    release: mock.method(apiUsageService, 'release', async () => {}),
   };
 
   return { sa, oauthBudget, postedWith, resolveCalls: () => resolveCalls };
@@ -110,6 +111,31 @@ test('SA rejected (403): counted once as an SA error, then falls back to the use
   const result = await publish();
   assert.equal(result.outcome, 'SUCCESS');
   assert.equal(t.sa.reportError.mock.callCount(), 1);
+  assert.equal(t.oauthBudget.release.mock.callCount(), 0, 'an SA rejection never touches the OAuth budget');
+});
+
+test('OAuth token rejected (403): the unit it took from the shared budget is given back', async () => {
+  const t = arrange({
+    resolutions: [{ credential: oauthCredential }],
+    post: () => {
+      throw googleError(403, 'Permission denied');
+    },
+  });
+  const result = await publish();
+  assert.equal(result.outcome, 'RETRYABLE');
+  assert.equal(t.oauthBudget.release.mock.callCount(), 1);
+  assert.equal(t.oauthBudget.markExhausted.mock.callCount(), 0);
+});
+
+test('OAuth 5xx does not give the budget back (Google may have counted it)', async () => {
+  const t = arrange({
+    resolutions: [{ credential: oauthCredential }],
+    post: () => {
+      throw googleError(503, 'Backend error');
+    },
+  });
+  await publish();
+  assert.equal(t.oauthBudget.release.mock.callCount(), 0);
 });
 
 test('429 on every credential reports QUOTA_EXHAUSTED and marks the OAuth budget spent', async () => {

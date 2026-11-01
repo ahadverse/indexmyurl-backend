@@ -7,6 +7,12 @@ import { wrapperService } from "./wrapperService";
 import { googleIndexingService, PublishResult } from "./googleIndexingService";
 import { sitemapService } from "./sitemapService";
 import { indexStatusService } from "./indexStatusService";
+import {
+  searchConsoleAccessService,
+  describeAccessFailure,
+  SearchConsoleAccess,
+  AccessFailure,
+} from "./searchConsoleAccessService";
 import { retryService } from "./retryService";
 import { env } from "../config/env";
 import {
@@ -23,6 +29,11 @@ export interface SubmitResult {
   status?: JobStatus;
   alreadyIndexed?: boolean;
   message: string;
+  /** Set when the submission was refused for lack of Search Console access */
+  code?: "NO_SEARCH_CONSOLE" | "SEARCH_CONSOLE_CHECK_FAILED";
+  accessIssue?: AccessFailure;
+  /** Address the user can add in Search Console instead of connecting Google */
+  serviceAccountEmail?: string | null;
 }
 
 export class JobOrchestratorService {
@@ -39,8 +50,31 @@ export class JobOrchestratorService {
       return { success: false, message: validation.reason! };
     }
 
+    // Search Console access: without it we can't confirm the result, can't charge for
+    // it, and the publish would only spend Indexing API quota. Refuse before any
+    // credit is reserved or any quota is spent.
+    let access: SearchConsoleAccess | undefined;
+    if (env.google.requireSearchConsole) {
+      const resolved = await searchConsoleAccessService.resolveForUrl(userId, url);
+      if (!resolved.ok) {
+        const serviceAccountEmail =
+          await searchConsoleAccessService.getServiceAccountEmail();
+        return {
+          success: false,
+          code:
+            resolved.reason === "CHECK_FAILED"
+              ? "SEARCH_CONSOLE_CHECK_FAILED"
+              : "NO_SEARCH_CONSOLE",
+          accessIssue: resolved.reason,
+          serviceAccountEmail,
+          message: describeAccessFailure(resolved.reason, url, serviceAccountEmail),
+        };
+      }
+      access = resolved.access;
+    }
+
     // Pre-check: already indexed? (only act on definitive INDEXED — ignore ERROR)
-    const preCheck = await indexStatusService.preCheck(url, userId);
+    const preCheck = await indexStatusService.preCheck(url, userId, access);
     if (preCheck.status === "INDEXED") {
       const domain = extractDomain(url);
       const job = await UrlJob.create({

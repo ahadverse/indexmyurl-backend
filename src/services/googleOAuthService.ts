@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import { User } from '../models/User';
 import { GoogleToken } from '../models/GoogleToken';
 import { UserSite, SiteVerificationStatus } from '../models/UserSite';
-import { signToken } from '../utils/jwt';
+import { signToken, signOAuthState, verifyOAuthState } from '../utils/jwt';
 import { generateApiKey, extractDomain, normalizeSiteUrl } from '../utils/helpers';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
@@ -21,15 +21,8 @@ export const GOOGLE_SCOPES = [
   'profile',
 ];
 
-// state param আলাদা করি: login vs connect
-// login:   state = "login"
-// connect: state = "connect:userId"
-function parseState(state: string): { type: 'login' | 'connect'; userId?: string } {
-  if (state.startsWith('connect:')) {
-    return { type: 'connect', userId: state.replace('connect:', '') };
-  }
-  return { type: 'login' };
-}
+// The OAuth `state` tells the callback whether this is a login or a connect (and for
+// which user). It is a short-lived signed token, see signOAuthState in utils/jwt.
 
 export class GoogleOAuthService {
   private createClient(): OAuth2Client {
@@ -46,7 +39,7 @@ export class GoogleOAuthService {
       access_type: 'offline',
       prompt: 'consent',
       scope: GOOGLE_SCOPES,
-      state: 'login',
+      state: signOAuthState({ flow: 'login' }),
     });
   }
 
@@ -56,7 +49,7 @@ export class GoogleOAuthService {
       access_type: 'offline',
       prompt: 'consent',
       scope: GOOGLE_SCOPES,
-      state: `connect:${userId}`,
+      state: signOAuthState({ flow: 'connect', userId }),
     });
   }
 
@@ -68,6 +61,16 @@ export class GoogleOAuthService {
     gscProperties?: string[];
     message: string;
   }> {
+    // Refuse a forged or stale state before spending a round trip to Google
+    const parsedState = verifyOAuthState(state);
+    if (!parsedState) {
+      logger.warn('Google OAuth callback with an invalid or expired state');
+      return {
+        success: false,
+        message: 'This sign-in request is invalid or has expired. Please start again.',
+      };
+    }
+
     const client = this.createClient();
 
     try {
@@ -89,12 +92,10 @@ export class GoogleOAuthService {
       const picture = payload.picture || null;
       const expiresAt = new Date(tokens.expiry_date || Date.now() + 3600 * 1000);
 
-      const { type, userId: stateUserId } = parseState(state);
-
       // ─── CONNECT flow: attach Google to existing account ──────────
-      if (type === 'connect' && stateUserId) {
+      if (parsedState.flow === 'connect') {
         return this.handleConnect(
-          stateUserId, googleId, email, tokens, expiresAt, picture
+          parsedState.userId, googleId, email, tokens, expiresAt, picture
         );
       }
 
@@ -147,11 +148,21 @@ export class GoogleOAuthService {
       await User.findByIdAndUpdate(user._id, updates);
     }
 
-    // Save/update Google token for GSC access
+    // Save/update Google token for GSC access, and load the properties it can see
+    // (without them a user who signed in with Google would look like they have no
+    // Search Console until they pressed Sync).
     if (tokens.access_token) {
-      await this.saveGoogleToken(
+      const tokenDoc = await this.saveGoogleToken(
         user._id, googleId, email, tokens, expiresAt
       );
+      if (tokenDoc) {
+        try {
+          await this.refreshTokenProperties(tokenDoc, tokens.access_token, email);
+        } catch (error) {
+          // Never block a login on this; the user can press Sync later
+          logger.warn(`Property sync after login failed for ${email}: ${(error as Error).message}`);
+        }
+      }
     }
 
     const jwtToken = signToken({ userId: user._id.toString(), email: user.email });
@@ -198,15 +209,8 @@ export class GoogleOAuthService {
       const tokenDoc = await this.saveGoogleToken(
         user._id, googleId, email, tokens, expiresAt
       );
-
-      // Sync GSC properties
-      if (tokenDoc && tokens.access_token) {
-        const props = await this.fetchGSCProperties(tokens.access_token);
-        await GoogleToken.findByIdAndUpdate(tokenDoc._id, {
-          gscProperties: props,
-          lastPropertiesSyncAt: new Date(),
-        });
-        await this.syncUserSites(user._id, tokenDoc._id, email, props);
+      if (tokenDoc) {
+        await this.refreshTokenProperties(tokenDoc, tokens.access_token, email);
       }
     }
 
@@ -273,13 +277,20 @@ export class GoogleOAuthService {
     const tokenDoc = await GoogleToken.findOne(query).sort({ createdAt: -1 });
     if (!tokenDoc) return null;
 
+    const accessToken = await this.accessTokenFor(tokenDoc);
+    if (!accessToken) return null;
+
+    return { accessToken, tokenDoc };
+  }
+
+  /**
+   * A usable access token for this exact token document, refreshing it first when it
+   * has expired (or is about to). Null when Google refuses the refresh.
+   */
+  async accessTokenFor(tokenDoc: InstanceType<typeof GoogleToken>): Promise<string | null> {
     const isExpired = new Date() >= new Date(tokenDoc.expiresAt.getTime() - 5 * 60 * 1000);
-    if (!isExpired) return { accessToken: tokenDoc.accessToken, tokenDoc };
-
-    const refreshed = await this.refreshToken(tokenDoc);
-    if (!refreshed) return null;
-
-    return { accessToken: refreshed, tokenDoc };
+    if (!isExpired) return tokenDoc.accessToken;
+    return this.refreshToken(tokenDoc);
   }
 
   private async refreshToken(tokenDoc: InstanceType<typeof GoogleToken>): Promise<string | null> {
@@ -305,7 +316,12 @@ export class GoogleOAuthService {
     }
   }
 
-  async fetchGSCProperties(accessToken: string): Promise<string[]> {
+  /**
+   * The Search Console properties this token can act on (owner or full user), or null
+   * when Google could not be asked. Null is not "no properties": callers must keep the
+   * list they already have instead of wiping it on a network blip or a revoked token.
+   */
+  async fetchGSCProperties(accessToken: string): Promise<string[] | null> {
     try {
       const res = await axios.get<{
         siteEntry?: Array<{ siteUrl: string; permissionLevel: string }>;
@@ -316,9 +332,28 @@ export class GoogleOAuthService {
       return (res.data.siteEntry || [])
         .filter((s) => ['siteOwner', 'siteFullUser'].includes(s.permissionLevel))
         .map((s) => s.siteUrl);
-    } catch {
-      return [];
+    } catch (error) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      logger.warn(`Could not list Search Console properties (${status ?? 'no response'})`);
+      return null;
     }
+  }
+
+  /** Re-read a token's properties and store them. A Google error keeps the stored list. */
+  private async refreshTokenProperties(
+    tokenDoc: InstanceType<typeof GoogleToken>,
+    accessToken: string,
+    googleEmail: string
+  ): Promise<string[] | null> {
+    const props = await this.fetchGSCProperties(accessToken);
+    if (props === null) return null;
+
+    await GoogleToken.findByIdAndUpdate(tokenDoc._id, {
+      gscProperties: props,
+      lastPropertiesSyncAt: new Date(),
+    });
+    await this.syncUserSites(tokenDoc.userId, tokenDoc._id, googleEmail, props);
+    return props;
   }
 
   private async syncUserSites(
@@ -381,17 +416,13 @@ export class GoogleOAuthService {
     }));
   }
 
+  /** Re-fetch the properties of every active Google account of this user, each with its own token. */
   async syncProperties(userId: mongoose.Types.ObjectId): Promise<void> {
     const tokens = await GoogleToken.find({ userId, isActive: true });
     for (const token of tokens) {
-      const result = await this.getValidToken(userId);
-      if (!result) continue;
-      const props = await this.fetchGSCProperties(result.accessToken);
-      await GoogleToken.findByIdAndUpdate(token._id, {
-        gscProperties: props,
-        lastPropertiesSyncAt: new Date(),
-      });
-      await this.syncUserSites(token.userId, token._id, token.googleEmail, props);
+      const accessToken = await this.accessTokenFor(token);
+      if (!accessToken) continue;
+      await this.refreshTokenProperties(token, accessToken, token.googleEmail);
     }
   }
 }

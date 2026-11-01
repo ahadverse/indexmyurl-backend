@@ -10,6 +10,7 @@ import { errorMiddleware, notFoundMiddleware } from './middlewares/errorMiddlewa
 
 import authRoutes from './routes/authRoutes';
 import oauthRoutes from './routes/oauthRoutes';
+import gscRoutes from './routes/gscRoutes';
 import urlRoutes from './routes/urlRoutes';
 import adminRoutes from './routes/adminRoutes';
 import publicRoutes from './routes/publicRoutes';
@@ -47,6 +48,7 @@ app.get('/health', (_req, res) => {
 // ─── API Routes ───────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);
+app.use('/api/gsc', gscRoutes);
 app.use('/api/urls', urlRoutes);
 app.use('/api/admin', adminRoutes);
 

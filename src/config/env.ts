@@ -74,6 +74,11 @@ export const env = {
       projectId: process.env.PLATFORM_SA_PROJECT_ID || '',
     },
     publishCredentialMode: parsePublishCredentialMode(process.env.PUBLISH_CREDENTIAL_MODE),
+    // Submit refuses a URL unless the user has Search Console access to its site (their own
+    // Google account, or our service account added as a Full user). Without it we can neither
+    // verify the result nor charge for it, and the publish would only spend quota.
+    // REQUIRE_SEARCH_CONSOLE=false turns the check off.
+    requireSearchConsole: process.env.REQUIRE_SEARCH_CONSOLE !== 'false',
     // Search Console property that owns BASE_URL; the platform SA submits the
     // wrapper sitemap under it. Defaults to the https://<BASE_URL host>/ property.
     platformGscSiteUrl: process.env.PLATFORM_GSC_SITE_URL || '',

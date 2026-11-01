@@ -1,6 +1,6 @@
 # IndexMeNow — SaaS URL Indexing Service
 
-A production-ready SaaS backend that indexes URLs in Google using the Indexing API with a JobPosting wrapper technique. Each user connects their own Google account — their credentials are used for API calls, so you never worry about quota.
+A production-ready SaaS backend that indexes URLs in Google using the Indexing API with a JobPosting wrapper technique. Users give the platform Search Console access to their site (by connecting their Google account, or by adding our service account as a Full user), which lets it confirm a page was indexed; credits are charged only for confirmed pages. Publishing is limited by the Indexing API quota, which Google counts per Cloud project, not per user.
 
 ---
 
@@ -29,7 +29,9 @@ backend/
 ## Architecture
 
 ```
-User connects Google Account (OAuth)
+User connects Google (OAuth) or adds our service account in Search Console
+         ↓
+Submit refused without Search Console access to the URL's site (no credit, no quota)
          ↓
 User submits URL via API
          ↓
@@ -63,8 +65,23 @@ Not indexed? → Retry (up to 3x, min 24h wait)
 If a credential is rejected (401/403) or out of quota (429), the next one in the
 order is tried. A user's token can publish only if it was granted the Indexing scope.
 
-**Status checks** (URL Inspection) use the user's own token first (only it can see
-the user's Search Console property), then a platform service account as a last resort.
+**Search Console access is required to submit.** Credits are charged only when a page
+is confirmed indexed, and only Search Console can confirm that, so a URL is refused
+(`400`, `code: NO_SEARCH_CONSOLE`, before any credit or quota is spent) unless the user
+has access to its site in one of two ways:
+
+1. **Their own Google account**, connected in Settings → Google (one click, OAuth), or
+2. **Our service account added as a Full user** of their property in Search Console
+   (Settings → Users and permissions). The address is returned as `serviceAccountEmail`.
+
+**Status checks** (URL Inspection) use whichever of the two gave access, against the
+exact property that covers the URL. A user's token is tried first, then a service account.
+`GET /api/gsc/access?url=<page>` tells the UI which one applies (`hasAccess`, `source`,
+`siteUrl`, or a `reason`: `NOT_CONNECTED`, `NO_PROPERTY`, `RECONNECT_NEEDED`,
+`CHECK_FAILED`) and `&refresh=1` re-reads Search Console right after the user adds us.
+The service account path does not prove who owns the site (the OAuth path does); it only
+exposes whether public pages are indexed, and the platform's own site is excluded.
+`REQUIRE_SEARCH_CONSOLE=false` switches the requirement off.
 
 > The wrapper pages are served from `BASE_URL`, and Google only accepts a publish
 > request from an Owner of the property containing that URL. So the platform service
@@ -142,6 +159,7 @@ To run on a server (Node + Redis + MongoDB Atlas behind an HTTPS reverse proxy),
 | GET | `/api/oauth/google/accounts` | Yes | List connected Google accounts |
 | POST | `/api/oauth/google/sync` | Yes | Re-sync GSC properties |
 | DELETE | `/api/oauth/google/:accountId` | Yes | Disconnect Google account |
+| GET | `/api/gsc/access?url=` | Yes | Does the user have Search Console access to this URL's site, and through what |
 
 ### URL Indexing
 | Method | Endpoint | Auth | Description |

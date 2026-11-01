@@ -68,8 +68,11 @@ describe('pre-flight scan — real Express app, MongoDB and Redis, local website
     await site.close();
   });
   beforeEach(async () => {
-    await resetData(); // also restores env.preflight to the test defaults
+    await resetData(); // also restores env and Search Console access to the test defaults
     await createServiceAccount();
+    // These tests are about what the scan refuses, on a local site that has no Search
+    // Console property. Access to Search Console is tested in searchConsoleGate.test.ts.
+    env.google.requireSearchConsole = false;
   });
 
   /** Scan the local website, submit for real. */

@@ -10,6 +10,7 @@ import { allQueues, indexingQueue } from '../../src/config/queue';
 import { startIndexingWorker } from '../../src/jobs/indexingWorker';
 import { INDEXING_SCOPE } from '../../src/services/googleOAuthService';
 import { sitemapService } from '../../src/services/sitemapService';
+import { searchConsoleAccessService } from '../../src/services/searchConsoleAccessService';
 import { generateApiKey } from '../../src/utils/helpers';
 import { logger } from '../../src/utils/logger';
 import { User } from '../../src/models/User';
@@ -40,6 +41,7 @@ export interface FakeReply {
 export interface PublishCall { url: string; type: string; token: string }
 export interface InspectCall { inspectionUrl: string; siteUrl: string; token: string }
 export interface SitemapCall { siteUrl: string; feed: string; token: string }
+export interface SitesCall { token: string }
 type Handler<C> = (call: C, n: number) => FakeReply | Promise<FakeReply>;
 
 export const reply = {
@@ -60,9 +62,17 @@ export const inspect = {
   crawledNotIndexed: inspection('NEUTRAL', 'Crawled - currently not indexed'),
 };
 
+/** What Search Console's "sites" list returns: the properties a credential has a role on. */
+export const sitesReply = (...entries: Array<[siteUrl: string, permissionLevel?: string]>): FakeReply =>
+  reply.ok({
+    siteEntry: entries.map(([siteUrl, permissionLevel = 'siteOwner']) => ({ siteUrl, permissionLevel })),
+  });
+const defaultSites = (): FakeReply => sitesReply(['sc-domain:customer.com']);
+
 export const google = {
   publishCalls: [] as PublishCall[],
   inspectCalls: [] as InspectCall[],
+  sitesCalls: [] as SitesCall[],
   sitemapCalls: [] as SitemapCall[],
   indexNowCalls: [] as unknown[],
   /** requests to anything that is not a known Google endpoint — must stay empty */
@@ -70,9 +80,12 @@ export const google = {
   refreshCalls: 0,
   onPublish: (() => reply.ok({ urlNotificationMetadata: {} })) as Handler<PublishCall>,
   onInspect: (() => inspect.unknown) as Handler<InspectCall>,
+  onSites: defaultSites as Handler<SitesCall>,
   reset(): void {
     this.publishCalls = [];
     this.inspectCalls = [];
+    this.sitesCalls = [];
+    this.onSites = defaultSites;
     this.sitemapCalls = [];
     this.indexNowCalls = [];
     this.blockedCalls = [];
@@ -139,10 +152,9 @@ async function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosRes
     return toResponse(config, reply.ok());
   }
   if (method === 'GET' && url === SITES_URL) {
-    return toResponse(
-      config,
-      reply.ok({ siteEntry: [{ siteUrl: 'sc-domain:customer.com', permissionLevel: 'siteOwner' }] })
-    );
+    const call = { token };
+    google.sitesCalls.push(call);
+    return toResponse(config, await google.onSites(call, google.sitesCalls.length));
   }
 
   google.blockedCalls.push(`${method} ${url}`);
@@ -208,6 +220,7 @@ export async function resetData(): Promise<void> {
   await indexingQueue.resume();
   await wipeCollections();
   google.reset();
+  searchConsoleAccessService.clearCache();
   for (const section of Object.keys(baselineEnv) as (keyof typeof baselineEnv)[]) {
     Object.assign(env[section], baselineEnv[section]);
   }

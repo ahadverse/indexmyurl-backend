@@ -30,6 +30,14 @@ export class ApiUsageService {
     }
   }
 
+  /** Give back a unit taken by tryConsume, for a call Google rejected before it counted. */
+  async release(bucket: string): Promise<void> {
+    await ApiUsage.updateOne(
+      { key: this.keyFor(bucket), count: { $gt: 0 } },
+      { $inc: { count: -1 } }
+    );
+  }
+
   /** Google told us we're out of quota — stop spending the rest of today's budget. */
   async markExhausted(bucket: string, limit: number): Promise<void> {
     await ApiUsage.updateOne(

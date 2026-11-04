@@ -45,7 +45,7 @@ Worker: Create JobPosting wrapper → Call Google Indexing API
          ↓
 Cron (every 15 min, per-job schedule): GSC check → INDEXED? → Deduct credit ✅
          ↓
-Not indexed? → Retry (up to 3x, min 24h wait)
+Not indexed? → Retry (MAX_RETRY_COUNT, default 3, RETRY_MIN_WAIT_HOURS apart; checked every RETRY_CRON = 30 min)
          ↓
 7 days / 3 retries exceeded → FAILED → Refund credit
 ```
@@ -178,13 +178,15 @@ To run on a server (Node + Redis + MongoDB Atlas behind an HTTPS reverse proxy),
 | POST | `/api/admin/service-accounts` | Add service account to pool |
 | PATCH | `/api/admin/service-accounts/:id/toggle` | Enable/disable |
 | POST | `/api/admin/service-accounts/:id/reset-quota` | Reset daily quota |
+| GET | `/api/admin/stats/wrappers` | Crawl rate per wrapper kind/design, retries needed to get indexed |
 | GET | `/api/admin/users` | List all users |
 | POST | `/api/admin/users/:userId/credits` | Add credits to user |
 
 ### Public (No Auth)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/job/:wrapperId` | Wrapper page (Googlebot crawls this) |
+| GET | `/job/:wrapperId` | Wrapper page (Googlebot crawls this); sends `Last-Modified` |
+| GET | `/thumb/:theme.svg` | Thumbnail used by livestream wrappers |
 | GET | `/sitemap.xml` | Active wrapper URLs |
 | GET | `/rss.xml` | RSS feed |
 | GET | `/robots.txt` | Crawler directives |
@@ -241,6 +243,54 @@ would, and reported as **ready**, **to check** (warnings) or **blocked**. Submit
 - Set `PREFLIGHT_ON_SUBMIT=false` to turn the submit gate off (the scan endpoint stays available).
 - A site that serves a different `robots.txt` depending on the visitor can produce a wrong
   `ROBOTS_BLOCKED`; the scanner reads what it is served.
+
+---
+
+## Wrappers
+
+A wrapper is the small public page (`GET /job/:wrapperId`) that Googlebot fetches after the Indexing API
+is notified. It links to, and uses as its canonical, the customer's URL. There are **13 designs** in two
+kinds, matching the two page types the Indexing API accepts:
+
+| Kind | Designs | Markup |
+|------|---------|--------|
+| `job` | `listing`, `bulletin`, `profile`, `digest`, `notice` | `JobPosting` |
+| `livestream` | `live-now`, `live-session`, `live-event`, `live-schedule`, `live-premiere`, `live-studio`, `live-roundtable`, `live-briefing` | `VideoObject` + `BroadcastEvent` (thumbnail served at `/thumb/<theme>.svg`) |
+
+Each design has its own layout, colours, headings and copy, and takes the page name from the URL path
+(`/blog/getting-started` → "Getting Started"), so the pages do not look like copies of each other. The
+visible facts always match the markup.
+
+- **Random, never repeated:** every new wrapper of a job (its first, an extra, or the one a retry makes)
+  gets a random design the job has not used yet, switching kind 70% of the time (`chooseTemplateId`).
+- **Every retry shows a new wrapper:** a retry retires all the job's wrappers (and tells Google to drop
+  them) and publishes a new one, so Google sees a different URL and a different design each time.
+- **Refresh:** a repeat notification for the same wrapper first regenerates it (new "last updated" date,
+  next opening paragraph; the posting date never moves) and bumps `Last-Modified`, so there is something
+  new to fetch. The sitemap and RSS use each wrapper's real modification time.
+- Templates live in `src/utils/wrapperTemplates.ts`, the renderer in `src/utils/htmlGenerator.ts`. All
+  text is escaped once, by the renderer; the tests prove no URL can add a tag, attribute or script.
+
+### Re-crawl nudges
+
+`services/recrawlService.ts` (cron `RECRAWL_CRON`, default every 30 min) looks at jobs that were
+published but are not indexed yet and, per job, does at most one of:
+
+1. **Nudge** — a wrapper Googlebot has not fetched, notified `RECRAWL_NUDGE_AFTER_HOURS` ago, is refreshed
+   and notified again (up to `RECRAWL_MAX_NUDGES` times).
+2. **Extra wrapper** — if the newest wrapper is `RECRAWL_EXTRA_WRAPPER_AFTER_HOURS` old, one more wrapper
+   (new URL, random design) is created and published, up to `RECRAWL_MAX_WRAPPERS` live wrappers per job.
+
+Nudges use platform service accounts only, never touch the job's status / `apiCalledAt` / error log, stop
+when fewer than `RECRAWL_QUOTA_RESERVE` publishes are left that day, and spend at most `RECRAWL_MAX_PER_RUN`
+calls per run. The decision itself is the pure function `planRecrawl` (`utils/recrawlPlan.ts`).
+
+### How many retries?
+
+`GET /api/admin/stats/wrappers?days=14` (admin key) reports how often Googlebot fetched each kind of
+wrapper and each design, how long it took, after how many retries jobs got indexed, and (once there are
+30 indexed jobs) `suggestedMaxRetryCount`: the smallest `MAX_RETRY_COUNT` that would still have covered
+95% of them. Use it to tune `MAX_RETRY_COUNT` and to see whether livestream or job wrappers get fetched more.
 
 ---
 

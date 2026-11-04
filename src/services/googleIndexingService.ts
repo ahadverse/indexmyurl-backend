@@ -17,6 +17,16 @@ const INDEXING_API_URL =
 
 type NotifyType = 'URL_UPDATED' | 'URL_DELETED';
 
+export interface NotifyOptions {
+  /**
+   * Record the result on the job (status, apiCalledAt, credential, Google's reply, error log).
+   * Default true. Re-crawl nudges pass false: they must not reset the job's timeline.
+   */
+  track?: boolean;
+  /** Only these credential sources may be used. Default: all, in PUBLISH_CREDENTIAL_MODE order. */
+  sources?: CredentialSource[];
+}
+
 /**
  * SUCCESS          — Google accepted the notification
  * QUOTA_EXHAUSTED  — daily quota is spent; wait for the Pacific-midnight reset
@@ -48,12 +58,19 @@ export class GoogleIndexingService {
   async notifyUrl(
     jobId: mongoose.Types.ObjectId,
     wrapperUrl: string,
-    type: NotifyType = 'URL_UPDATED'
+    type: NotifyType = 'URL_UPDATED',
+    options: NotifyOptions = {}
   ): Promise<PublishResult> {
     const job = await UrlJob.findById(jobId);
     if (!job) return { outcome: 'PERMANENT', message: 'Job not found' };
 
-    const tried = new Set<CredentialSource>();
+    const track = options.track !== false;
+    // Sources outside the allowed list count as already tried, so the resolver skips them
+    const tried = new Set<CredentialSource>(
+      options.sources
+        ? (['OAUTH', 'SERVICE_ACCOUNT'] as CredentialSource[]).filter((s) => !options.sources!.includes(s))
+        : []
+    );
     let sawQuota = false;
     let last: PublishResult | null = null;
 
@@ -71,7 +88,7 @@ export class GoogleIndexingService {
             resolution.reason === 'QUOTA_EXHAUSTED'
               ? 'Daily Indexing API quota is used up — will resume after the quota resets.'
               : 'No Google credential available. Ask an admin to add a platform service account, or connect your Google account in Settings → Google.';
-          await this.logJobError(jobId, message, 'GOOGLE_INDEXING_API');
+          if (track) await this.logJobError(jobId, message, 'GOOGLE_INDEXING_API');
           return {
             outcome: sawQuota ? 'QUOTA_EXHAUSTED' : 'RETRYABLE',
             message,
@@ -87,7 +104,8 @@ export class GoogleIndexingService {
         jobId,
         wrapperUrl,
         type,
-        credential
+        credential,
+        track
       );
       if (attempt.outcome === 'SUCCESS') return attempt;
       if (attempt.outcome === 'QUOTA_EXHAUSTED') sawQuota = true;
@@ -105,7 +123,8 @@ export class GoogleIndexingService {
     jobId: mongoose.Types.ObjectId,
     wrapperUrl: string,
     type: NotifyType,
-    credential: ResolvedCredential
+    credential: ResolvedCredential,
+    track: boolean
   ): Promise<AttemptResult> {
     try {
       const response = await axios.post(
@@ -128,15 +147,17 @@ export class GoogleIndexingService {
       }
 
       // Update job
-      await UrlJob.findByIdAndUpdate(jobId, {
-        status: JobStatus.WAITING_CRAWL,
-        apiCalledAt: new Date(),
-        nextPublishAt: null,
-        credentialSource: credential.source,
-        googleTokenId: credential.tokenDoc?._id ?? null,
-        serviceAccountId: credential.serviceAccount?._id ?? null,
-        googleApiResponse: { ...response.data, _credentialSource: credential.source },
-      });
+      if (track) {
+        await UrlJob.findByIdAndUpdate(jobId, {
+          status: JobStatus.WAITING_CRAWL,
+          apiCalledAt: new Date(),
+          nextPublishAt: null,
+          credentialSource: credential.source,
+          googleTokenId: credential.tokenDoc?._id ?? null,
+          serviceAccountId: credential.serviceAccount?._id ?? null,
+          googleApiResponse: { ...response.data, _credentialSource: credential.source },
+        });
+      }
 
       logger.info(
         `Google Indexing API notified | job: ${jobId} | source: ${credential.source}`
@@ -155,7 +176,7 @@ export class GoogleIndexingService {
       logger.error(
         `Google Indexing API failed | job: ${jobId} | source: ${credential.source} | ${status ?? 'no response'} | ${errMsg}`
       );
-      await this.logJobError(jobId, message, 'GOOGLE_INDEXING_API');
+      if (track) await this.logJobError(jobId, message, 'GOOGLE_INDEXING_API');
 
       // 429: this credential is out of quota for today. It is healthy, so don't
       // count it as an error — just stop using it until the quota resets.

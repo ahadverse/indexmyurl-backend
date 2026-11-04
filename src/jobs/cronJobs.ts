@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import { UrlJob, JobStatus } from "../models/UrlJob";
 import { jobOrchestrator } from "../services/jobOrchestratorService";
 import { retryService } from "../services/retryService";
+import { recrawlService } from "../services/recrawlService";
 import { env } from "../config/env";
 import { sleep } from "../utils/helpers";
 import { isStatusCheckDue } from "../utils/schedule";
@@ -99,13 +100,47 @@ export function startRecoveryJob(): void {
   logger.info("Cron: recovery scheduled (every 10 min)");
 }
 
-// ─── Retry eligible jobs — every 6 hours ─────────────────────────────
+// ─── Re-crawl nudges — pages Googlebot has not fetched yet ───────────
+export function startRecrawlJob(): void {
+  if (!env.recrawl.enabled) {
+    logger.info("Cron: recrawl disabled (RECRAWL_ENABLED=false)");
+    return;
+  }
+  let running = false;
+
+  cron.schedule(env.recrawl.cron, async () => {
+    if (running) return;
+    running = true;
+
+    try {
+      await recrawlService.run();
+    } catch (error) {
+      logger.error("Cron recrawl failed:", error);
+    } finally {
+      running = false;
+    }
+  });
+  const r = env.recrawl;
+  logger.info(
+    `Cron: recrawl scheduled (${r.cron}; nudge after ${r.nudgeAfterHours}h x${r.maxNudgesPerWrapper}, ` +
+      `extra wrapper after ${r.extraWrapperAfterHours}h, max ${r.maxWrappersPerJob} wrapper(s)/job, ` +
+      `${r.maxPerRun} calls/run, quota reserve ${r.quotaReserve})`,
+  );
+}
+
+// ─── Retry eligible jobs — RETRY_CRON (default every 30 minutes) ─────
 export function startRetryJob(): void {
-  cron.schedule("0 */6 * * *", async () => {
-    logger.info("Cron: retry job started");
+  let running = false;
+
+  cron.schedule(env.job.retryCron, async () => {
+    if (running) return;
+    running = true;
+
     try {
       const jobIds = await retryService.getJobsReadyForRetry();
-      logger.info(`Cron: ${jobIds.length} jobs eligible for retry`);
+      if (jobIds.length > 0) {
+        logger.info(`Cron: ${jobIds.length} jobs eligible for retry`);
+      }
 
       for (const jobId of jobIds) {
         try {
@@ -117,9 +152,13 @@ export function startRetryJob(): void {
       }
     } catch (error) {
       logger.error("Cron retry job failed:", error);
+    } finally {
+      running = false;
     }
   });
-  logger.info("Cron: retry job scheduled (every 6h)");
+  logger.info(
+    `Cron: retry job scheduled (${env.job.retryCron}; wait ${env.job.retryMinWaitHours}h, max ${env.job.maxRetryCount} retries)`,
+  );
 }
 
 // ─── Cleanup expired jobs — daily at midnight ─────────────────────────

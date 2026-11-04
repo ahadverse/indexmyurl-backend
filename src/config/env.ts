@@ -97,6 +97,25 @@ export const env = {
     // How long after the Indexing API call before the first Search Console check
     firstCheckAfterMinutes: parseInt(process.env.INDEX_CHECK_FIRST_AFTER_MINUTES || '20', 10),
   },
+  // Re-crawl nudges for pages Googlebot has not fetched yet (see services/recrawlService.ts)
+  recrawl: {
+    enabled: process.env.RECRAWL_ENABLED !== 'false',
+    cron: process.env.RECRAWL_CRON || '*/30 * * * *',
+    // A wrapper still not fetched by Googlebot this long after its last notification is refreshed
+    // and the Indexing API is notified again
+    nudgeAfterHours: parseFloat(process.env.RECRAWL_NUDGE_AFTER_HOURS || '6'),
+    // Extra notifications per wrapper (the first publish does not count)
+    maxNudgesPerWrapper: parseInt(process.env.RECRAWL_MAX_NUDGES || '2', 10),
+    // A job still not indexed this long after its newest wrapper was created gets one more wrapper
+    // (a new URL with a different design)
+    extraWrapperAfterHours: parseFloat(process.env.RECRAWL_EXTRA_WRAPPER_AFTER_HOURS || '12'),
+    // Live wrappers per job, the first one included (1 = never add extras)
+    maxWrappersPerJob: parseInt(process.env.RECRAWL_MAX_WRAPPERS || '2', 10),
+    // Indexing API calls one run may spend
+    maxPerRun: parseInt(process.env.RECRAWL_MAX_PER_RUN || '25', 10),
+    // Daily Indexing API quota kept free for first publishes: nudges stop when less than this is left
+    quotaReserve: parseInt(process.env.RECRAWL_QUOTA_RESERVE || '40', 10),
+  },
   indexNow: {
     // Optional. When set, new wrapper URLs are also submitted to IndexNow (Bing, Yandex, ...)
     key: process.env.INDEXNOW_KEY || '',
@@ -105,6 +124,9 @@ export const env = {
     wrapperExpiryHours: parseInt(process.env.WRAPPER_EXPIRY_HOURS || '72', 10),
     maxRetryCount: parseInt(process.env.MAX_RETRY_COUNT || '3', 10),
     retryMinWaitHours: parseInt(process.env.RETRY_MIN_WAIT_HOURS || '24', 10),
+    // How often the retry cron looks for jobs whose wait is over. A retry is never earlier than
+    // RETRY_MIN_WAIT_HOURS and at most this interval later, so keep it well below the wait.
+    retryCron: process.env.RETRY_CRON || '*/30 * * * *',
     failAfterDays: parseInt(process.env.FAIL_AFTER_DAYS || '7', 10),
     // Failed Indexing API calls (not quota waits) before the job fails and is refunded
     maxPublishAttempts: parseInt(process.env.MAX_PUBLISH_ATTEMPTS || '5', 10),

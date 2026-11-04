@@ -4,6 +4,7 @@ import { wrapperService } from './wrapperService';
 import { googleIndexingService } from './googleIndexingService';
 import { queueService } from './queueService';
 import { env } from '../config/env';
+import { isRetryWaitOver, retryDueCutoff } from '../utils/schedule';
 import { logger } from '../utils/logger';
 
 export class RetryService {
@@ -16,8 +17,8 @@ export class RetryService {
     if (this.isExpired(job.createdAt)) return false;
 
     if (job.lastRetryAt) {
-      const minWait = env.job.retryMinWaitHours * 60 * 60 * 1000;
-      if (Date.now() - job.lastRetryAt.getTime() < minWait) return false;
+      const minWaitMs = env.job.retryMinWaitHours * 60 * 60 * 1000;
+      if (!isRetryWaitOver({ now: Date.now(), since: job.lastRetryAt, minWaitMs })) return false;
     }
 
     return true;
@@ -33,15 +34,13 @@ export class RetryService {
     logger.info(`Retrying job ${jobId} (attempt #${job.retryCount + 1})`);
 
     try {
-      // Deactivate old wrapper
-      if (job.wrapperId) {
-        await wrapperService.deactivateWrapper(
-          job.wrapperId,
-          `retry_${job.retryCount + 1}`
-        );
-        if (job.wrapperUrl) {
-          await googleIndexingService.removeUrl(job.wrapperUrl);
-        }
+      // Deactivate the old wrappers (the first one and any extras) and tell Google to drop them
+      const retired = await wrapperService.deactivateJobWrappers(
+        jobId,
+        `retry_${job.retryCount + 1}`
+      );
+      for (const wrapperUrl of new Set([...retired, ...(job.wrapperUrl ? [job.wrapperUrl] : [])])) {
+        await googleIndexingService.removeUrl(wrapperUrl);
       }
 
       // Reset job state
@@ -86,15 +85,15 @@ export class RetryService {
   }
 
   async getJobsReadyForRetry(): Promise<string[]> {
-    const now = new Date();
     const minWaitMs = env.job.retryMinWaitHours * 60 * 60 * 1000;
+    const cutoff = retryDueCutoff(Date.now(), minWaitMs);
 
     const jobs = await UrlJob.find({
       status: { $in: [JobStatus.WAITING_CRAWL, JobStatus.CRAWLED_NOT_INDEXED] },
       retryCount: { $lt: env.job.maxRetryCount },
       $or: [
-        { lastRetryAt: null, apiCalledAt: { $lte: new Date(now.getTime() - minWaitMs) } },
-        { lastRetryAt: { $lte: new Date(now.getTime() - minWaitMs) } },
+        { lastRetryAt: null, apiCalledAt: { $lte: cutoff } },
+        { lastRetryAt: { $lte: cutoff } },
       ],
     }).select('_id');
 

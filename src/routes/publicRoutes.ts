@@ -7,6 +7,10 @@ router.get('/job/:wrapperId', (req, res, next) =>
   wrapperController.serveWrapper(req, res, next)
 );
 
+router.get('/thumb/:theme.svg', (req, res) =>
+  wrapperController.serveThumbnail(req, res)
+);
+
 router.get('/sitemap.xml', (req, res, next) =>
   wrapperController.serveSitemap(req, res, next)
 );

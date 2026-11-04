@@ -67,6 +67,16 @@ export class ServiceAccountPool {
     return !!spent;
   }
 
+  // ─── Publishes left today across healthy accounts (no quota is spent) ─
+  async remainingQuota(): Promise<number> {
+    await this.resetExpiredQuotas();
+    const accounts = await ServiceAccount.find({
+      isActive: true,
+      consecutiveErrors: { $lt: 5 },
+    }).select('dailyQuotaUsed dailyQuotaLimit');
+    return accounts.reduce((sum, a) => sum + Math.max(0, a.dailyQuotaLimit - a.dailyQuotaUsed), 0);
+  }
+
   // ─── Google said 429: spent for today, but the account is healthy ─
   async markQuotaExhausted(accountId: string): Promise<void> {
     const account = await ServiceAccount.findById(accountId).select('dailyQuotaLimit');

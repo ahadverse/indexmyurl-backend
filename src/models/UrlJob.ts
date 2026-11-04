@@ -42,6 +42,11 @@ export interface IUrlJob extends Document {
   nextPublishAt: Date | null;   // set when the call is deferred (quota / backoff)
   lastCheckedAt: Date | null;   // last Search Console status check
 
+  // Re-crawl nudges (see services/recrawlService.ts): extra notifications and extra wrappers
+  // sent while Googlebot has not fetched / indexed the page yet
+  recrawlCount: number;
+  lastRecrawlAt: Date | null;
+
   // Timestamps
   queuedAt: Date | null;
   apiCalledAt: Date | null;
@@ -99,6 +104,9 @@ const UrlJobSchema = new Schema<IUrlJob>(
     publishAttempts: { type: Number, default: 0 },
     nextPublishAt: { type: Date, default: null },
     lastCheckedAt: { type: Date, default: null },
+
+    recrawlCount: { type: Number, default: 0 },
+    lastRecrawlAt: { type: Date, default: null },
 
     queuedAt: { type: Date, default: null },
     apiCalledAt: { type: Date, default: null },

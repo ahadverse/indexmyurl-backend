@@ -29,6 +29,21 @@ export function isStatusCheckDue(opts: {
   return sinceLast >= statusCheckIntervalMs(age) - DUE_SLACK_MS;
 }
 
+/**
+ * Has a retry's minimum wait passed? `since` is the last attempt (the Indexing API call, or the
+ * previous retry). The same few minutes of slack as the status checks: a retry is recorded a few
+ * seconds after the cron tick that started it, so without slack a job due "6 hours after the last
+ * retry" would just miss the tick 6 hours later and wait for the next one.
+ */
+export function isRetryWaitOver(opts: { now: number; since: Date; minWaitMs: number }): boolean {
+  return opts.now - opts.since.getTime() >= opts.minWaitMs - DUE_SLACK_MS;
+}
+
+/** Jobs whose last attempt is at or before this instant have waited long enough (see isRetryWaitOver). */
+export function retryDueCutoff(now: number, minWaitMs: number): Date {
+  return new Date(now - minWaitMs + DUE_SLACK_MS);
+}
+
 /** Backoff before re-trying a failed Indexing API call: 5, 10, 20, 40, then 60 min. */
 export function publishRetryDelayMs(attempts: number): number {
   return Math.min(5 * MINUTE * 2 ** Math.max(0, attempts - 1), 60 * MINUTE);

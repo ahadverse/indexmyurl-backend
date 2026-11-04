@@ -8,6 +8,7 @@ import { startIndexingWorker } from './jobs/indexingWorker';
 import {
   startIndexCheckJob,
   startRecoveryJob,
+  startRecrawlJob,
   startRetryJob,
   startCleanupJob,
 } from './jobs/cronJobs';
@@ -37,6 +38,7 @@ async function bootstrap(): Promise<void> {
   // 4. Start cron jobs
   startIndexCheckJob();
   startRecoveryJob();
+  startRecrawlJob();
   startRetryJob();
   startCleanupJob();
 

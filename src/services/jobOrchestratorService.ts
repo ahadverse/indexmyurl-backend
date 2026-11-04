@@ -184,7 +184,7 @@ export class JobOrchestratorService {
     }
 
     // Always create wrapper regardless of GSC check result
-    const { wrapperUrl } = await wrapperService.createWrapper(jobId);
+    const { wrapperId, wrapperUrl } = await wrapperService.createWrapper(jobId);
     logger.info(`Wrapper created for job ${jobId}: ${wrapperUrl}`);
 
     // Call Google Indexing API
@@ -193,6 +193,8 @@ export class JobOrchestratorService {
       await this.handlePublishFailure(jobId, result);
       return;
     }
+
+    await wrapperService.markNotified(wrapperId);
 
     // Secondary crawl signals
     await sitemapService.sendSecondaryCrawlSignals([wrapperUrl]);
@@ -347,9 +349,8 @@ export class JobOrchestratorService {
       await creditService.deductCredit(job.userId);
     }
 
-    if (job.wrapperId) {
-      await wrapperService.deactivateWrapper(job.wrapperId, "success");
-    }
+    // The first wrapper and any extras added while waiting
+    await wrapperService.deactivateJobWrappers(jobId, "success");
 
     await queueService.decrementDomainCount(job.domain);
     logger.info(`Job ${jobId} SUCCESS ✅`);
@@ -384,11 +385,9 @@ export class JobOrchestratorService {
       await creditService.refundCredit(job.userId);
     }
 
-    if (job.wrapperId) {
-      await wrapperService.deactivateWrapper(job.wrapperId, "failed");
-      if (job.wrapperUrl) {
-        await googleIndexingService.removeUrl(job.wrapperUrl);
-      }
+    const retired = await wrapperService.deactivateJobWrappers(jobId, "failed");
+    for (const wrapperUrl of new Set([...retired, ...(job.wrapperUrl ? [job.wrapperUrl] : [])])) {
+      await googleIndexingService.removeUrl(wrapperUrl);
     }
 
     await queueService.decrementDomainCount(job.domain);

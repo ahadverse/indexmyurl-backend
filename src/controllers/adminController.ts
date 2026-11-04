@@ -4,6 +4,7 @@ import { serviceAccountPool } from '../services/serviceAccountPool';
 import { User } from '../models/User';
 import { creditService } from '../services/creditService';
 import mongoose from 'mongoose';
+import { getWrapperStats } from '../services/wrapperStatsService';
 
 export class AdminController {
   /** GET /api/admin/service-accounts */
@@ -11,6 +12,16 @@ export class AdminController {
     try {
       const summary = await serviceAccountPool.getQuotaSummary();
       res.json({ success: true, ...summary });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** GET /api/admin/stats/wrappers?days=14 — crawl rate per wrapper kind, and after how many retries jobs got indexed */
+  async wrapperStats(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const days = Math.min(90, Math.max(1, parseInt(req.query.days as string, 10) || 14));
+      res.json({ success: true, ...(await getWrapperStats(days)) });
     } catch (error) {
       next(error);
     }

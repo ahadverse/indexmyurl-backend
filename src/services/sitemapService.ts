@@ -25,8 +25,8 @@ export class SitemapService {
   }
 
   async updateSitemap(): Promise<string> {
-    const urls = await wrapperService.getActiveWrapperUrls();
-    this.cachedSitemap = generateSitemapXml(urls);
+    const entries = await wrapperService.getActiveWrapperEntries();
+    this.cachedSitemap = generateSitemapXml(entries);
     this.lastGenerated = new Date();
     return this.cachedSitemap;
   }
@@ -39,8 +39,8 @@ export class SitemapService {
   }
 
   async getRssFeed(): Promise<string> {
-    const urls = await wrapperService.getActiveWrapperUrls();
-    return generateRssFeed(urls);
+    const entries = await wrapperService.getActiveWrapperEntries();
+    return generateRssFeed(entries);
   }
 
   /**

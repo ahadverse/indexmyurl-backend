@@ -20,6 +20,9 @@ router.post('/service-accounts/:id/reset-quota', (req, res, next) =>
   adminController.resetQuota(req, res, next)
 );
 
+// Stats
+router.get('/stats/wrappers', (req, res, next) => adminController.wrapperStats(req, res, next));
+
 // Users
 router.get('/users', (req, res, next) => adminController.listUsers(req, res, next));
 router.post('/users/:userId/credits', (req, res, next) =>

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { wrapperService } from '../services/wrapperService';
 import { sitemapService } from '../services/sitemapService';
 import { env } from '../config/env';
+import { isTheme, thumbnailSvg } from '../utils/wrapperTemplates';
 
 export class WrapperController {
   /** GET /job/:wrapperId — serve wrapper HTML to Googlebot */
@@ -16,6 +17,9 @@ export class WrapperController {
 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store, no-cache');
+      // Real modification time: Googlebot sends it back as If-Modified-Since and gets a 304 until
+      // the page really changes (a refresh bumps it)
+      res.setHeader('Last-Modified', result.lastModified.toUTCString());
 
       if (!result.isActive) {
         res.setHeader('X-Robots-Tag', 'noindex, nofollow');
@@ -25,6 +29,18 @@ export class WrapperController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /** GET /thumb/:theme.svg — the thumbnail livestream wrappers point to */
+  serveThumbnail(req: Request, res: Response): void {
+    const theme = req.params.theme;
+    if (!isTheme(theme)) {
+      res.status(404).send('Not Found');
+      return;
+    }
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(thumbnailSvg(theme));
   }
 
   /** GET /sitemap.xml */
@@ -69,6 +85,7 @@ export class WrapperController {
     const content = [
       'User-agent: *',
       'Allow: /job/',
+      'Allow: /thumb/',
       'Allow: /sitemap.xml',
       'Allow: /rss.xml',
       'Disallow: /api/',
